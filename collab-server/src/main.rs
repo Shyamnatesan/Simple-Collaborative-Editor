@@ -10,7 +10,7 @@ use axum::{
     response::IntoResponse,
     routing::get,
 };
-use futures_util::{SinkExt, StreamExt, stream::SplitSink};
+use futures_util::{SinkExt, StreamExt, future::join_all, stream::SplitSink};
 use serde::Serialize;
 use tokio::{net::TcpListener, sync::Mutex};
 use tower_http::cors::{Any, CorsLayer};
@@ -46,7 +46,7 @@ async fn main() {
 
     // Configure CORS
     let cors = CorsLayer::new()
-        .allow_origin(Any) // or restrict: .allow_origin("http://localhost:5173".parse::<HeaderValue>().unwrap())
+        .allow_origin(Any)
         .allow_methods([Method::GET, Method::POST])
         .allow_headers(Any);
 
@@ -140,6 +140,24 @@ async fn handle_socket(socket: WebSocket, room_id: String, state: AppState) {
                             let mut s = participant.sender.lock().await;
                             s.send(Message::Text(text.clone())).await.unwrap();
                         }
+
+                        let futures: Vec<_> = room
+                            .participants
+                            .iter()
+                            .map(|participant| {
+                                let text = text.clone();
+                                let sender = participant.sender.clone();
+
+                                async move {
+                                    let mut s = sender.lock().await;
+                                    if let Err(e) = s.send(Message::Text(text)).await {
+                                        eprintln!("Failed to send: {:?}", e);
+                                    }
+                                }
+                            })
+                            .collect();
+
+                        join_all(futures).await;
                     }
                 }
                 Message::Close(_) => {
